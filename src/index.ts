@@ -262,8 +262,19 @@ async function loadCredentialsAndRunServer() {
     process.exit(1);
   }
 
+  const keysPath = path.join(
+    path.dirname(new URL(import.meta.url).pathname),
+    "../gcp-oauth.keys.json",
+  );
+  const keys = JSON.parse(fs.readFileSync(keysPath, "utf-8"));
+  const oauthConfig = keys.installed || keys.web;
+
   const credentials = JSON.parse(fs.readFileSync(credentialsPath, "utf-8"));
-  const auth = new google.auth.OAuth2();
+  const auth = new google.auth.OAuth2(
+    oauthConfig.client_id,
+    oauthConfig.client_secret,
+    oauthConfig.redirect_uris?.[0],
+  );
   auth.setCredentials(credentials);
   google.options({ auth });
 
