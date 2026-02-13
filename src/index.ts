@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { authenticate } from "@google-cloud/local-auth";
+import { OAuth2Client } from "google-auth-library";
+import * as http from "http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -240,18 +241,62 @@ const credentialsPath = path.join(
 
 async function authenticateAndSaveCredentials() {
   console.log("Launching auth flow…");
-  const p = path.join(
+  const keysPath = path.join(
     path.dirname(new URL(import.meta.url).pathname),
     "../gcp-oauth.keys.json",
   );
+  const keys = JSON.parse(fs.readFileSync(keysPath, "utf-8"));
+  const oauthConfig = keys.installed || keys.web;
 
-  console.log(p);
-  const auth = await authenticate({
-    keyfilePath: p,
-    scopes: ["https://www.googleapis.com/auth/tasks"],
+  const client = new OAuth2Client({
+    clientId: oauthConfig.client_id,
+    clientSecret: oauthConfig.client_secret,
   });
-  fs.writeFileSync(credentialsPath, JSON.stringify(auth.credentials));
-  console.log("Credentials saved. You can now run the server.");
+
+  await new Promise<void>((resolve, reject) => {
+    const callbackServer = http.createServer(async (req, res) => {
+      const url = new URL(req.url!, `http://localhost`);
+      const code = url.searchParams.get("code");
+      if (!code) {
+        res.end("No authorization code received.");
+        return;
+      }
+      try {
+        const { tokens } = await client.getToken({
+          code,
+          redirect_uri: redirectUri,
+        });
+        fs.writeFileSync(credentialsPath, JSON.stringify(tokens));
+        res.end("Authentication successful! You can close this tab.");
+        console.log("Credentials saved. You can now run the server.");
+        callbackServer.close();
+        resolve();
+      } catch (e) {
+        res.end("Authentication failed.");
+        reject(e);
+      }
+    });
+
+    let redirectUri: string;
+
+    callbackServer.listen(0, () => {
+      const port = (callbackServer.address() as { port: number }).port;
+      redirectUri = `http://localhost:${port}/`;
+      const authorizeUrl = client.generateAuthUrl({
+        redirect_uri: redirectUri,
+        access_type: "offline",
+        scope: "https://www.googleapis.com/auth/tasks",
+      });
+      console.log(`\nOpen this URL in your browser:\n${authorizeUrl}\n`);
+      const { execFileSync } = require("child_process");
+      try {
+        execFileSync("xdg-open", [authorizeUrl], { stdio: "ignore" });
+      } catch {
+        // browser open failed, URL is printed above
+      }
+      console.log(`Waiting for callback on port ${port}...`);
+    });
+  });
 }
 
 async function loadCredentialsAndRunServer() {
